@@ -263,11 +263,14 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
   constructor(props: Props<T>) {
     super(props);
     const {data, onRef} = props;
-    console.log(this.keyToIndex);
-    console.log('n\\n\n\n\\n\n\n\n');
-    data.forEach((item, index) => {
-      const titleKey = this.keyExtractor(item.sectionTitle, index);
-      this.keyToIndex.set(titleKey, index);
+    let indexCounter = -1;
+    data.forEach((item) => {
+      const titleKey = this.keyExtractor(item.sectionTitle, ++indexCounter);
+      this.keyToIndex.set(titleKey, indexCounter);
+      item.data.forEach((dataItem: T) => {
+        const dataKey = this.keyExtractor(dataItem, ++indexCounter);
+        this.keyToIndex.set(dataKey, indexCounter);
+      });
     });
     onRef && onRef(this.SectionListRef);
   }
@@ -298,7 +301,7 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
         });
       });
       // Remeasure on next paint
-      // this.updateCellData(this.props.data)
+      this.updateCellData(this.props.data);
       onNextFrame(this.flushQueue);
 
       if (
@@ -381,7 +384,6 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
         newData.splice(from, 1);
         newData.splice(to, 0, data[from]);
       }
-
       onDragEnd({from, to, data: newData});
     }
 
@@ -399,12 +401,19 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
     this.resetHoverState();
   };
 
-  updateCellData = (data: T[] = []) =>
-    data.forEach((item: T, index: number) => {
-      const key = this.keyExtractor(item, index);
-      const cell = this.cellData.get(key);
-      if (cell) cell.currentIndex.setValue(index);
+  updateCellData = (data: dataValue[] = []) => {
+    let indexCounter = -1;
+    return data.forEach((item: dataValue) => {
+      const titleKey = this.keyExtractor(item.sectionTitle, ++indexCounter);
+      const titleCell = this.cellData.get(titleKey);
+      if (titleCell) titleCell.currentIndex.setValue(indexCounter);
+      item.data.forEach((dataItem: any) => {
+        const itemKey = this.keyExtractor(dataItem, ++indexCounter);
+        const itemCell = this.cellData.get(itemKey);
+        if (itemCell) itemCell.currentIndex.setValue(indexCounter);
+      });
     });
+  };
 
   setCellData = (key: string, index: number) => {
     const clock = new Clock();
@@ -496,10 +505,15 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
     this.cellData.set(key, cellData);
   };
 
-  measureAll = (data: T[]) => {
-    data.forEach((d, i) => {
-      const key = this.keyExtractor(d, i);
-      this.measureCell(key);
+  measureAll = (data: dataValue[]) => {
+    let indexCounter = -1;
+    data.forEach((item) => {
+      const titleKey = this.keyExtractor(item.sectionTitle, ++indexCounter);
+      this.measureCell(titleKey);
+      item.data.forEach((dataItem: T) => {
+        const dataKey = this.keyExtractor(dataItem, ++indexCounter);
+        this.measureCell(dataKey);
+      });
     });
   };
 
@@ -848,7 +862,7 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
             ? styles.hoverComponentHorizontal
             : styles.hoverComponentVertical,
           {
-            opacity: this.hoverComponentOpacity,
+            opacity: 1,
             transform: [
               {
                 [`translate${horizontal ? 'X' : 'Y'}`]: this
@@ -865,11 +879,62 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
     );
   };
 
-  renderItem = ({item, index}: {item: T; index: number}) => {
-    const key = this.keyExtractor(item, index);
-    if (index !== this.keyToIndex.get(key)) this.keyToIndex.set(key, index);
+  renderSectionHeader = (item: dataValue) => {
+    let key = '';
+
+    let indexCounter = -1;
+    this.props.data.forEach((propsItem) => {
+      ++indexCounter;
+      if (item !== propsItem) return;
+      key = this.keyExtractor(propsItem, indexCounter);
+      propsItem.data.forEach((dataItem: T) => {
+        ++indexCounter;
+      });
+    });
+    // тут сомнительный момент, ключи дублируются, нужно поправить
+    if (key && indexCounter !== this.keyToIndex.get(key))
+      this.keyToIndex.set(key, indexCounter);
+    const {renderSectionHeader} = this.props;
+    if (!this.cellData.get(key)) this.setCellData(key, indexCounter);
+    const {onUnmount} = this.cellData.get(key) || {
+      onUnmount: () => {
+        if (this.props.debug) console.log('## error, no cellData');
+      },
+    };
+    return (
+      <RowSectionHeader
+        extraData={this.props.extraData}
+        itemKey={key}
+        keyToIndex={this.keyToIndex}
+        renderSectionHeader={this.props.renderSectionHeader}
+        item={(item as any).section}
+        drag={this.drag}
+        onUnmount={onUnmount}
+      />
+    );
+  };
+
+  renderItem = ({item}: {item: T; index: number}) => {
+    let key = '';
+
+    let indexCounter = -1;
+    this.props.data.forEach((propsItem) => {
+      ++indexCounter;
+      propsItem.data.forEach((dataItem: T) => {
+        if (
+          indexCounter !== parseInt(this.keyExtractor(dataItem, indexCounter))
+        ) {
+          ++indexCounter;
+        }
+        if (item !== dataItem) return;
+        key = this.keyExtractor(dataItem, indexCounter);
+      });
+    });
+    // тут сомнительный момент, ключи дублируются, нужно поправить
+    if (key && indexCounter !== this.keyToIndex.get(key))
+      this.keyToIndex.set(key, indexCounter);
     const {renderItem} = this.props;
-    if (!this.cellData.get(key)) this.setCellData(key, index);
+    if (!this.cellData.get(key)) this.setCellData(key, indexCounter);
     const {onUnmount} = this.cellData.get(key) || {
       onUnmount: () => {
         if (this.props.debug) console.log('## error, no cellData');
@@ -919,7 +984,6 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
         {[translateKey]: this.placeholderPos},
       ] as Animated.AnimatedTransform,
     };
-
     return (
       <Animated.View style={style}>
         {renderPlaceholder({item: activeItem, index: activeIndex})}
@@ -983,6 +1047,7 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
           <AnimatedSectionList
             sections={this.props.data}
             renderItem={this.renderItem}
+            renderSectionHeader={this.renderSectionHeader}
           />
           {!!hoverComponent && this.renderHoverComponent()}
           <Animated.Code>
@@ -1035,7 +1100,8 @@ type RowItemProps<T> = {
   drag: (hoverComponent: React.ReactNode, itemKey: string) => void;
   keyToIndex: Map<string, number>;
   item: T;
-  renderItem: (params: RenderItemParams<T>) => React.ReactNode;
+  renderItem?: (params: RenderItemParams<T>) => React.ReactNode;
+  renderSectionHeader?: (params: RenderItemParams<T>) => React.ReactNode;
   itemKey: string;
   onUnmount: () => void;
   debug?: boolean;
@@ -1044,7 +1110,7 @@ type RowItemProps<T> = {
 class RowItem<T> extends React.PureComponent<RowItemProps<T>> {
   drag = () => {
     const {drag, renderItem, item, keyToIndex, itemKey, debug} = this.props;
-    const hoverComponent = renderItem({
+    const hoverComponent = renderItem!({
       isActive: true,
       item,
       index: keyToIndex.get(itemKey),
@@ -1062,7 +1128,44 @@ class RowItem<T> extends React.PureComponent<RowItemProps<T>> {
 
   render() {
     const {renderItem, item, keyToIndex, itemKey} = this.props;
-    return renderItem({
+    return renderItem!({
+      isActive: false,
+      item,
+      index: keyToIndex.get(itemKey),
+      drag: this.drag,
+    });
+  }
+}
+
+class RowSectionHeader<T> extends React.PureComponent<RowItemProps<T>> {
+  drag = () => {
+    const {
+      drag,
+      renderSectionHeader,
+      item,
+      keyToIndex,
+      itemKey,
+      debug,
+    } = this.props;
+    const hoverComponent = renderSectionHeader!({
+      isActive: true,
+      item,
+      index: keyToIndex.get(itemKey),
+      drag: () => {
+        if (debug)
+          console.log('## attempt to call drag() on hovering component');
+      },
+    });
+    drag(hoverComponent, itemKey);
+  };
+
+  componentWillUnmount() {
+    this.props.onUnmount();
+  }
+
+  render() {
+    const {renderSectionHeader, item, keyToIndex, itemKey} = this.props;
+    return renderSectionHeader!({
       isActive: false,
       item,
       index: keyToIndex.get(itemKey),
