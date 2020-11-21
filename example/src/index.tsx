@@ -14,6 +14,7 @@ import {
   State as GestureState,
   GestureHandlerGestureEventNativeEvent,
   PanGestureHandlerEventExtra,
+  PanGestureHandlerGestureEvent,
 } from 'react-native-gesture-handler';
 import Animated from 'react-native-reanimated';
 import {springFill, setupCell} from './procs';
@@ -84,7 +85,7 @@ export type DragEndParams<T> = {
 };
 
 export type RenderItemParams<T> = {
-  item: T;
+  item: RenderItemParams<T>;
   index?: number; // This is technically a "last known index" since cells don't necessarily rerender when their index changes
   drag: () => void;
   isActive: boolean;
@@ -106,7 +107,9 @@ type Props<T> = Modify<
     onRelease?: (index: number) => void;
     onDragEnd?: (params: DragEndParams<T>) => void;
     renderItem: (params: RenderItemParams<T>) => React.ReactNode;
-    renderPlaceholder?: (params: {item: T; index: number}) => React.ReactNode;
+    renderSectionHeader: (params: RenderItemParams<T>) => React.ReactNode;
+    renderPlaceholder?: (params: {item: any; index: number}) => React.ReactNode;
+    keyExtractor: (item: RenderItemParams<T>, index: number) => string;
     animationConfig: Partial<Animated.SpringConfig>;
     activationDistance?: number;
     debug?: boolean;
@@ -617,7 +620,7 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
     });
   };
 
-  keyExtractor = (item: T, index: number) => {
+  keyExtractor = (item: RenderItemParams<T>, index: number) => {
     if (this.props.keyExtractor) return this.props.keyExtractor(item, index);
     else
       throw new Error(
@@ -848,25 +851,41 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
     },
   ]);
 
-  onPanGestureEvent = event([
-    {
-      nativeEvent: ({x, y}: PanGestureHandlerEventExtra) =>
-        cond(
-          and(
-            this.isHovering,
-            eq(this.panGestureState, GestureState.ACTIVE),
-            not(this.disabled),
-          ),
-          [
-            cond(not(this.hasMoved), set(this.hasMoved, 1)),
-            set(
-              this.touchAbsolute,
-              add(this.props.horizontal ? x : y, this.activationDistance),
-            ),
-          ],
+  onPanGestureEvent = (notFuncEvent: PanGestureHandlerGestureEvent) => {
+    const nativeEvent = notFuncEvent.nativeEvent;
+
+    // if (this.props.setCoordinates) {
+    //   this.props.setCoordinates.call(
+    //     this.props.thisArg,
+    //     nativeEvent.absoluteY,
+    //     nativeEvent.absoluteX
+    //   );
+    // }
+
+    const setValue = () => {
+      this.touchAbsolute.setValue(
+        add(
+          this.props.horizontal ? nativeEvent.x : nativeEvent.y,
+          this.activationDistance,
         ),
-    },
-  ]);
+      );
+      return this.touchAbsolute;
+    };
+
+    const setMoved = () => {
+      this.hasMoved.setValue(1);
+      return this.hasMoved;
+    };
+
+    cond(
+      and(
+        this.isHovering,
+        eq(this.panGestureState, GestureState.ACTIVE),
+        not(this.disabled),
+      ),
+      [cond(not(this.hasMoved), setMoved()), setValue()],
+    );
+  };
 
   hoverComponentTranslate = cond(
     clockRunning(this.hoverClock),
@@ -1040,39 +1059,6 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
     );
   };
 
-  CellRendererComponent = (cellProps: any) => {
-    const {item, index, children, onLayout} = cellProps;
-    const {horizontal} = this.props;
-    const {activeKey} = this.state;
-    const key = this.keyExtractor(item, index);
-    if (!this.cellData.get(key)) this.setCellData(key, index);
-    const cellData = this.cellData.get(key);
-    if (!cellData) return null;
-    const {style, onLayout: onCellLayout} = cellData;
-    let ref = this.cellRefs.get(key);
-    if (!ref) {
-      ref = React.createRef();
-      this.cellRefs.set(key, ref);
-    }
-    const isActiveCell = activeKey === key;
-    return (
-      <Animated.View onLayout={onLayout} style={style}>
-        <Animated.View
-          pointerEvents={activeKey ? 'none' : 'auto'}
-          style={{
-            flexDirection: horizontal ? 'row' : 'column',
-          }}>
-          <Animated.View
-            ref={ref}
-            onLayout={onCellLayout}
-            style={isActiveCell ? {opacity: 0} : undefined}>
-            {children}
-          </Animated.View>
-        </Animated.View>
-      </Animated.View>
-    );
-  };
-
   renderDebug() {
     return (
       <Animated.Code>
@@ -1189,7 +1175,7 @@ type RowSectionProps<T> = {
   extraData?: any;
   drag: (hoverComponent: React.ReactNode, itemKey: string) => void;
   keyToIndex: Map<string, number>;
-  item: T;
+  item: RenderItemParams<T>;
   renderSectionHeader: (params: RenderItemParams<T>) => React.ReactNode;
   itemKey: string;
   onUnmount: () => void;
@@ -1200,7 +1186,7 @@ type RowItemProps<T> = {
   extraData?: any;
   drag: (hoverComponent: React.ReactNode, itemKey: string) => void;
   keyToIndex: Map<string, number>;
-  item: T;
+  item: RenderItemParams<T>;
   renderItem: (params: RenderItemParams<T>) => React.ReactNode;
   itemKey: string;
   onUnmount: () => void;
