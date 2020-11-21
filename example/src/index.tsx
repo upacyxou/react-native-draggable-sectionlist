@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   findNodeHandle,
+  Platform,
   SectionList,
   SectionListData,
   SectionListProps,
@@ -9,14 +10,34 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
+import {
+  State as GestureState,
+  GestureHandlerGestureEventNativeEvent,
+  PanGestureHandler,
+  PanGestureHandlerEventExtra,
+} from 'react-native-gesture-handler';
 import Animated, {
   add,
+  and,
+  block,
+  call,
   Clock,
   clockRunning,
   cond,
+  defined,
+  eq,
+  event,
+  greaterOrEq,
   greaterThan,
+  lessOrEq,
   max,
   min,
+  neq,
+  not,
+  onChange,
+  or,
+  set,
+  spring,
   startClock,
   stopClock,
   sub,
@@ -25,6 +46,8 @@ import Animated, {
 import {setupCell, springFill} from './procs';
 
 const AnimatedSectionList = Animated.createAnimatedComponent(SectionList);
+
+const scrollPositionTolerance = 2;
 
 const defaultAnimationConfig = {
   damping: 20,
@@ -76,6 +99,7 @@ type Modify<T, R> = Omit<T, keyof R> & R;
 type Props<T> = Modify<
   SectionListProps<T>,
   {
+    layoutInvalidationKey?: string;
     onDragBegin?: (index: number) => void;
     sections: sectionValue[];
     renderItem: (params: RenderItemParams<T>) => React.ReactNode;
@@ -100,6 +124,14 @@ type CellData = {
   onLayout: () => void;
   onUnmount: () => void;
 };
+
+// Run callback on next paint:
+// https://stackoverflow.com/questions/26556436/react-after-render-code
+function onNextFrame(callback: () => void) {
+  setTimeout(function () {
+    requestAnimationFrame(callback);
+  });
+}
 
 class DraggableSectionList<T> extends React.Component<Props<T>> {
   headersAndData: any[] = [];
@@ -356,7 +388,117 @@ class DraggableSectionList<T> extends React.Component<Props<T>> {
     }
   };
 
+  dataKeysHaveChanged = (a: sectionValue[], b: sectionValue[]) => {
+    const lengthOfSectionsChanged =
+      Object.keys(a).length !== Object.keys(b).length;
+    if (lengthOfSectionsChanged) return true;
+    let AheadersAndData: any[] = [];
+    let BheadersAndData: any[] = [];
+
+    a.forEach((item) => {
+      AheadersAndData = [...AheadersAndData, item.section];
+      item.data.forEach((dataItem) => {
+        AheadersAndData = [...AheadersAndData, dataItem];
+      });
+    });
+    const aKeys = AheadersAndData.map((dataOrHeader, index) =>
+      this.keyExtractor(dataOrHeader, index),
+    );
+
+    b.forEach((item) => {
+      BheadersAndData = [...BheadersAndData, item.section];
+      item.data.forEach((dataItem) => {
+        BheadersAndData = [...BheadersAndData, dataItem];
+      });
+    });
+    const bKeys = BheadersAndData.map((dataOrHeader, index) =>
+      this.keyExtractor(dataOrHeader, index),
+    );
+
+    const sameKeys = aKeys.every((k) => bKeys.includes(k));
+    return !sameKeys;
+  };
+
+  updateCellData = (sections: sectionValue[] = []) => {
+    let localheadersAndData: any[] = [];
+    sections.forEach((item) => {
+      localheadersAndData = [...localheadersAndData, item.section];
+      item.data.forEach((dataItem) => {
+        localheadersAndData = [...localheadersAndData, dataItem];
+      });
+    });
+    return localheadersAndData.forEach((dataOrHeader, index) => {
+      const key = this.keyExtractor(dataOrHeader, index);
+      const cell = this.cellData.get(key);
+      if (cell) cell.currentIndex.setValue(index);
+    });
+  };
+
+  componentDidUpdate = async (prevProps: Props<T>, prevState: State) => {
+    const layoutInvalidationKeyHasChanged =
+      prevProps.layoutInvalidationKey !== this.props.layoutInvalidationKey;
+    const dataHasChanged = prevProps.sections !== this.props.sections;
+    if (layoutInvalidationKeyHasChanged || dataHasChanged) {
+      this.props.sections.forEach((item) => {
+        this.headersAndData = [...this.headersAndData, item.section];
+        item.data.forEach((dataItem) => {
+          this.headersAndData = [...this.headersAndData, dataItem];
+        });
+      });
+      this.headersAndData.forEach((dataOrHeader, index) => {
+        const key = this.keyExtractor(dataOrHeader, index);
+        this.keyToIndex.set(key, index);
+      });
+
+      this.updateCellData(this.props.sections);
+      onNextFrame(this.flushQueue);
+
+      if (
+        layoutInvalidationKeyHasChanged ||
+        this.dataKeysHaveChanged(prevProps.sections, this.props.sections)
+      ) {
+        this.queue.push(() => this.measureAll(this.props.sections));
+      }
+    }
+
+    if (!prevState.activeKey && this.state.activeKey) {
+      const index = this.keyToIndex.get(this.state.activeKey);
+      if (index !== undefined) {
+        this.spacerIndex.setValue(index);
+        this.activeIndex.setValue(index);
+        this.touchCellOffset.setValue(0);
+        this.isPressedIn.native.setValue(1);
+      }
+      const cellData = this.cellData.get(this.state.activeKey);
+      if (cellData) {
+        this.touchAbsolute.setValue(sub(cellData.offset, this.scrollOffset));
+        this.activeCellSize.setValue(cellData.measurements.size);
+      }
+    }
+  };
+
+  flushQueue = async () => {
+    this.queue.forEach((fn) => fn());
+    this.queue = [];
+  };
+
+  measureAll = (sections: sectionValue[]) => {
+    let localHeadersAndData: any = [];
+
+    sections.forEach((item) => {
+      localHeadersAndData = [localHeadersAndData, item.section];
+      item.data.forEach((dataItem) => {
+        localHeadersAndData = [localHeadersAndData, dataItem];
+      });
+    });
+    localHeadersAndData.forEach((dataOrHeader: any, index: number) => {
+      const key = this.keyExtractor(dataOrHeader, index);
+      this.measureCell(key);
+    });
+  };
+
   renderItem = (item: RenderItemParams<T>) => {
+    console.log(this.keyToIndex.size);
     const index = this.headersAndData.indexOf(item.item);
     const key = this.keyExtractor(item.item, index);
     const {activeKey} = this.state;
@@ -444,14 +586,341 @@ class DraggableSectionList<T> extends React.Component<Props<T>> {
     );
   };
 
-  render() {
+  disabled = new Value(0);
+  hoverClock = new Clock();
+  hoverAnimState = {
+    finished: new Value(0),
+    velocity: new Value(0),
+    position: new Value(0),
+    time: new Value(0),
+  };
+
+  resetHoverState = () => {
+    this.activeIndex.setValue(-1);
+    this.spacerIndex.setValue(-1);
+    this.disabled.setValue(0);
+    if (this.state.hoverComponent !== null || this.state.activeKey !== null) {
+      this.setState({
+        hoverComponent: null,
+        activeKey: null,
+      });
+    }
+  };
+
+  onRelease = ([index]: readonly number[]) => {
+    // const { onRelease } = this.props;
+    // this.isPressedIn.js = false;
+    // onRelease && onRelease(index);
+  };
+
+  onGestureRelease = [
+    cond(
+      this.isHovering,
+      [
+        set(this.disabled, 1),
+        cond(defined(this.hoverClock), [
+          cond(clockRunning(this.hoverClock), stopClock(this.hoverClock)),
+          set(this.hoverAnimState.position, this.hoverAnim),
+          startClock(this.hoverClock),
+        ]),
+        [
+          call([this.activeIndex], this.onRelease),
+          cond(
+            not(this.hasMoved),
+            call([this.activeIndex], this.resetHoverState),
+          ),
+        ],
+      ],
+      call([this.activeIndex], this.resetHoverState),
+    ),
+  ];
+
+  panGestureState = new Value(GestureState.UNDETERMINED);
+  activationDistance = new Value<number>(0);
+  onPanStateChange = event([
+    {
+      nativeEvent: ({
+        state,
+        x,
+        y,
+      }: GestureHandlerGestureEventNativeEvent & PanGestureHandlerEventExtra) =>
+        cond(and(neq(state, this.panGestureState), not(this.disabled)), [
+          set(this.panGestureState, state),
+          cond(
+            eq(this.panGestureState, GestureState.ACTIVE),
+            set(
+              this.activationDistance,
+              sub(this.touchAbsolute, this.props.horizontal ? x : y),
+            ),
+          ),
+          cond(
+            or(
+              eq(state, GestureState.END),
+              eq(state, GestureState.CANCELLED),
+              eq(state, GestureState.FAILED),
+            ),
+            this.onGestureRelease,
+          ),
+        ]),
+    },
+  ]);
+
+  onPanGestureEvent = event([
+    {
+      nativeEvent: ({x, y}: PanGestureHandlerEventExtra) =>
+        cond(
+          and(
+            this.isHovering,
+            eq(this.panGestureState, GestureState.ACTIVE),
+            not(this.disabled),
+          ),
+          [
+            cond(not(this.hasMoved), set(this.hasMoved, 1)),
+            set(
+              this.touchAbsolute,
+              add(this.props.horizontal ? x : y, this.activationDistance),
+            ),
+          ],
+        ),
+    },
+  ]);
+
+  hoverComponentTranslate = cond(
+    clockRunning(this.hoverClock),
+    this.hoverAnimState.position,
+    this.hoverAnim,
+  );
+
+  hoverComponentOpacity = and(
+    this.isHovering,
+    neq(this.panGestureState, GestureState.CANCELLED),
+  );
+
+  renderHoverComponent = () => {
+    const {hoverComponent} = this.state;
+    const {horizontal} = this.props;
+
     return (
-      <AnimatedSectionList
-        ref={this.flatlistRef}
-        sections={this.props.sections}
-        renderItem={this.renderItem}
-        renderSectionHeader={this.renderSectionHeader}
-      />
+      <Animated.View
+        style={[
+          horizontal
+            ? styles.hoverComponentHorizontal
+            : styles.hoverComponentVertical,
+          {
+            opacity: this.hoverComponentOpacity,
+            transform: [
+              {
+                [`translate${horizontal ? 'X' : 'Y'}`]: this
+                  .hoverComponentTranslate,
+              },
+              // We need the cast because the transform array usually accepts
+              // only specific keys, and we dynamically generate the key
+              // above
+            ] as Animated.AnimatedTransform,
+          },
+        ]}>
+        {hoverComponent}
+      </Animated.View>
+    );
+  };
+  distToTopEdge = max(0, this.hoverAnim);
+  distToBottomEdge = max(
+    0,
+    sub(this.containerSize, add(this.hoverAnim, this.activeCellSize)),
+  );
+  isAtTopEdge = lessOrEq(this.distToTopEdge, this.props.autoscrollThreshold!);
+  isAtBottomEdge = lessOrEq(
+    this.distToBottomEdge,
+    this.props.autoscrollThreshold!,
+  );
+  scrollViewSize = new Value<number>(0);
+  isAtEdge = or(this.isAtBottomEdge, this.isAtTopEdge);
+  isScrolledUp = lessOrEq(sub(this.scrollOffset, scrollPositionTolerance), 0);
+  isScrolledDown = greaterOrEq(
+    add(this.scrollOffset, this.containerSize, scrollPositionTolerance),
+    this.scrollViewSize,
+  );
+  isAutoscrolling = {
+    native: new Value<number>(0),
+    js: false,
+  };
+  autoscrollParams = [
+    this.distToTopEdge,
+    this.distToBottomEdge,
+    this.scrollOffset,
+    this.isScrolledUp,
+    this.isScrolledDown,
+  ];
+  getScrollTargetOffset = (
+    distFromTop: number,
+    distFromBottom: number,
+    scrollOffset: number,
+    isScrolledUp: boolean,
+    isScrolledDown: boolean,
+  ) => {
+    if (this.isAutoscrolling.js) return -1;
+    const {autoscrollThreshold, autoscrollSpeed} = this.props;
+    const scrollUp = distFromTop < autoscrollThreshold!;
+    const scrollDown = distFromBottom < autoscrollThreshold!;
+    if (
+      !(scrollUp || scrollDown) ||
+      (scrollUp && isScrolledUp) ||
+      (scrollDown && isScrolledDown)
+    )
+      return -1;
+    const distFromEdge = scrollUp ? distFromTop : distFromBottom;
+    const speedPct = 1 - distFromEdge / autoscrollThreshold!;
+    // Android scroll speed seems much faster than ios
+    const speed =
+      Platform.OS === 'ios' ? autoscrollSpeed! : autoscrollSpeed! / 10;
+    const offset = speedPct * speed;
+    const targetOffset = scrollUp
+      ? Math.max(0, scrollOffset - offset)
+      : scrollOffset + offset;
+    return targetOffset;
+  };
+
+  autoscroll = async (params: readonly number[]) => {
+    if (this.autoscrollLooping) {
+      return;
+    }
+    this.autoscrollLooping = true;
+    try {
+      let shouldScroll = true;
+      let curParams = params;
+      while (shouldScroll) {
+        const [
+          distFromTop,
+          distFromBottom,
+          scrollOffset,
+          isScrolledUp,
+          isScrolledDown,
+        ] = curParams;
+        const targetOffset = this.getScrollTargetOffset(
+          distFromTop,
+          distFromBottom,
+          scrollOffset,
+          !!isScrolledUp,
+          !!isScrolledDown,
+        );
+        const scrollingUpAtTop = !!(
+          isScrolledUp && targetOffset <= scrollOffset
+        );
+        const scrollingDownAtBottom = !!(
+          isScrolledDown && targetOffset >= scrollOffset
+        );
+        shouldScroll =
+          targetOffset >= 0 &&
+          this.isPressedIn.js &&
+          !scrollingUpAtTop &&
+          !scrollingDownAtBottom;
+
+        if (shouldScroll) {
+          // curParams = await this.scrollToAsync(targetOffset);
+        }
+      }
+    } finally {
+      this.autoscrollLooping = false;
+    }
+  };
+  autoscrollLooping = false;
+  checkAutoscroll = cond(
+    and(
+      this.isAtEdge,
+      not(and(this.isAtTopEdge, this.isScrolledUp)),
+      not(and(this.isAtBottomEdge, this.isScrolledDown)),
+      eq(this.panGestureState, GestureState.ACTIVE),
+      not(this.isAutoscrolling.native),
+    ),
+    call(this.autoscrollParams, this.autoscroll),
+  );
+  moveEndParams = [this.activeIndex, this.spacerIndex];
+  onDragEnd = ([from, to]: readonly number[]) => {
+    // const { onDragEnd } = this.props;
+    // if (onDragEnd) {
+    //   const { data } = this.props;
+    //   let newData = [...data];
+    //   if (from !== to) {
+    //     newData.splice(from, 1);
+    //     newData.splice(to, 0, data[from]);
+    //   }
+    //   onDragEnd({ from, to, data: newData });
+  };
+
+  resetHoverSpring = [
+    set(this.hoverAnimState.time, 0),
+    set(this.hoverAnimState.position, this.hoverAnimConfig.toValue),
+    set(this.touchAbsolute, this.hoverAnimConfig.toValue),
+    set(this.touchCellOffset, 0),
+    set(this.hoverAnimState.finished, 0),
+    set(this.hoverAnimState.velocity, 0),
+    set(this.hasMoved, 0),
+  ];
+  render() {
+    const {activationDistance, horizontal, dragHitSlop} = this.props;
+
+    let dynamicProps = {};
+    if (activationDistance) {
+      const activeOffset = [-activationDistance, activationDistance];
+      dynamicProps = horizontal
+        ? {activeOffsetX: activeOffset}
+        : {activeOffsetY: activeOffset};
+    }
+
+    const {hoverComponent} = this.state;
+
+    return (
+      <PanGestureHandler
+        hitSlop={dragHitSlop}
+        onGestureEvent={this.onPanGestureEvent}
+        onHandlerStateChange={this.onPanStateChange}
+        {...dynamicProps}>
+        <Animated.View style={styles.flex}>
+          <AnimatedSectionList
+            ref={this.flatlistRef}
+            sections={this.props.sections}
+            renderItem={this.renderItem}
+            renderSectionHeader={this.renderSectionHeader}
+          />
+          {!!hoverComponent && this.renderHoverComponent()}
+          <Animated.Code>
+            {() =>
+              block([
+                onChange(
+                  this.isPressedIn.native,
+                  cond(not(this.isPressedIn.native), this.onGestureRelease),
+                ),
+                onChange(this.touchAbsolute, this.checkAutoscroll),
+                cond(clockRunning(this.hoverClock), [
+                  spring(
+                    this.hoverClock,
+                    this.hoverAnimState,
+                    this.hoverAnimConfig,
+                  ),
+                  cond(eq(this.hoverAnimState.finished, 1), [
+                    stopClock(this.hoverClock),
+                    call(this.moveEndParams, this.onDragEnd),
+                    this.resetHoverSpring,
+                    set(this.hasMoved, 0),
+                  ]),
+                ]),
+              ])
+            }
+          </Animated.Code>
+          {/* {onScrollOffsetChange && (
+            <Animated.Code>
+              {() =>
+                onChange(
+                  this.scrollOffset,
+                  call([this.scrollOffset], ([offset]) =>
+                    onScrollOffsetChange(offset)
+                  )
+                )
+              }
+            </Animated.Code>
+          )} */}
+        </Animated.View>
+      </PanGestureHandler>
     );
   }
 }
