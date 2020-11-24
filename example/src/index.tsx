@@ -15,11 +15,16 @@ import {
   GestureHandlerGestureEventNativeEvent,
   PanGestureHandlerEventExtra,
   PanGestureHandlerGestureEvent,
+  ScrollView,
 } from 'react-native-gesture-handler';
 import Animated from 'react-native-reanimated';
 import {springFill, setupCell} from './procs';
 
-const AnimatedSectionList = Animated.createAnimatedComponent(RNSectionList);
+const createNativeWrapper = require('react-native-gesture-handler/createNativeWrapper');
+
+import {SectionList} from './SectionList';
+
+const AnimatedSectionList = Animated.createAnimatedComponent(SectionList());
 
 const {
   Value,
@@ -76,7 +81,7 @@ const defaultProps = {
 
 type DefaultProps = Readonly<typeof defaultProps>;
 
-type AnimatedSectionListType<T> = {getNode: () => RNSectionList<T>};
+type AnimatedSectionListType<T> = {getNode: () => typeof AnimatedSectionList};
 
 export type DragEndParams<T> = {
   data: T[];
@@ -102,7 +107,7 @@ type Props<T> = Modify<
     autoscrollSpeed?: number;
     autoscrollThreshold?: number;
     data: sectionValue[];
-    onRef?: (ref: React.RefObject<AnimatedSectionListType<T>>) => void;
+    onRef?: (ref: any) => void;
     onDragBegin?: (index: number) => void;
     onRelease?: (index: number) => void;
     onDragEnd?: (params: DragEndParams<T>) => void;
@@ -110,6 +115,8 @@ type Props<T> = Modify<
     renderSectionHeader: (params: RenderItemParams<T>) => React.ReactNode;
     renderPlaceholder?: (params: {item: any; index: number}) => React.ReactNode;
     keyExtractor: (item: RenderItemParams<T>, index: number) => string;
+    onMove?: (gestureEvent: PanGestureHandlerGestureEvent) => void;
+    isSectionHeader?: (itemToCheck: any) => boolean;
     animationConfig: Partial<Animated.SpringConfig>;
     activationDistance?: number;
     debug?: boolean;
@@ -402,28 +409,44 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
   };
 
   onDragEnd = ([from, to]: readonly number[]) => {
-    // const { onDragEnd } = this.props
-    // if (onDragEnd) {
-    //   const { data } = this.props
-    //   let newData = [...data]
-    //   if (from !== to) {
-    //     newData.splice(from, 1)
-    //     newData.splice(to, 0, data[from])
-    //   }
+    const {onDragEnd, isSectionHeader} = this.props;
+    this.headersAndData.forEach((e) => {
+      console.log(this.props.isSectionHeader!(e));
+    });
+    let changedObject: sectionValue[] = [];
+    let lastSection: any;
+    if (onDragEnd && isSectionHeader) {
+      const data = this.headersAndData;
+      let newData = [...data];
+      if (from !== to) {
+        newData.splice(from, 1);
+        newData.splice(to, 0, data[from]);
+      }
+      newData.forEach((item) => {
+        if (isSectionHeader(item)) {
+          const objectToPush = {section: item, data: []};
+          lastSection = item;
+          changedObject.push(objectToPush);
+          return;
+        }
+        changedObject[changedObject.length - 1].data = [
+          changedObject[changedObject.length - 1].data,
+          item,
+        ];
+      });
+      onDragEnd({from, to, data: changedObject});
+    }
 
-    //   onDragEnd({ from, to, data: newData })
-    // }
-
-    // const lo = Math.min(from, to) - 1
-    // const hi = Math.max(from, to) + 1
-    // for (let i = lo; i < hi; i++) {
-    //   this.queue.push(() => {
-    //     const item = this.props.data[i]
-    //     if (!item) return
-    //     const key = this.keyExtractor(item, i)
-    //     return this.measureCell(key)
-    //   })
-    // }
+    const lo = Math.min(from, to) - 1;
+    const hi = Math.max(from, to) + 1;
+    for (let i = lo; i < hi; i++) {
+      this.queue.push(() => {
+        const item = this.headersAndData[i];
+        if (!item) return;
+        const key = this.keyExtractor(item, i);
+        return this.measureCell(key);
+      });
+    }
 
     this.resetHoverState();
   };
@@ -658,7 +681,9 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
       this.isAutoscrolling.native.setValue(1);
       this.isAutoscrolling.js = true;
       const SectionListRef = this.SectionListRef.current;
-      // if (SectionListRef) SectionListRef.getNode().scrollToOffset({ offset });
+      SectionListRef?.getNode()._wrapperListRef._listRef.scrollToOffset({
+        offset: offset,
+      });
     });
 
   getScrollTargetOffset = (
@@ -851,41 +876,25 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
     },
   ]);
 
-  onPanGestureEvent = (notFuncEvent: PanGestureHandlerGestureEvent) => {
-    const nativeEvent = notFuncEvent.nativeEvent;
-
-    // if (this.props.setCoordinates) {
-    //   this.props.setCoordinates.call(
-    //     this.props.thisArg,
-    //     nativeEvent.absoluteY,
-    //     nativeEvent.absoluteX
-    //   );
-    // }
-
-    const setValue = () => {
-      this.touchAbsolute.setValue(
-        add(
-          this.props.horizontal ? nativeEvent.x : nativeEvent.y,
-          this.activationDistance,
+  onPanGestureEvent = event([
+    {
+      nativeEvent: ({x, y}: PanGestureHandlerEventExtra) =>
+        cond(
+          and(
+            this.isHovering,
+            eq(this.panGestureState, GestureState.ACTIVE),
+            not(this.disabled),
+          ),
+          [
+            cond(not(this.hasMoved), set(this.hasMoved, 1)),
+            set(
+              this.touchAbsolute,
+              add(this.props.horizontal ? x : y, this.activationDistance),
+            ),
+          ],
         ),
-      );
-      return this.touchAbsolute;
-    };
-
-    const setMoved = () => {
-      this.hasMoved.setValue(1);
-      return this.hasMoved;
-    };
-
-    cond(
-      and(
-        this.isHovering,
-        eq(this.panGestureState, GestureState.ACTIVE),
-        not(this.disabled),
-      ),
-      [cond(not(this.hasMoved), setMoved()), setValue()],
-    );
-  };
+    },
+  ]);
 
   hoverComponentTranslate = cond(
     clockRunning(this.hoverClock),
@@ -1117,11 +1126,11 @@ class DraggableSectionList<T> extends React.Component<Props<T>, State> {
             sections={this.props.data}
             ref={this.SectionListRef}
             onContentSizeChange={this.onListContentSizeChange}
-            scrollEnabled={!hoverComponent && scrollEnabled}
             renderItem={this.renderItem}
             renderSectionHeader={this.renderSectionHeader}
             extraData={this.state}
             keyExtractor={this.keyExtractor}
+            scrollEnabled={!hoverComponent && scrollEnabled}
             onScroll={this.onScroll}
             scrollEventThrottle={1}
           />
